@@ -1,0 +1,11 @@
+target/
+*.class
+
+# Logs & temp
+*.log
+
+# OS & IDE files
+.DS_Store
+.idea/
+*.iml
+.vscode/
