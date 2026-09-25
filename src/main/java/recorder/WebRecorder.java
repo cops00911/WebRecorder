@@ -192,6 +192,7 @@ public class WebRecorder {
             "  }\n" +
             "\n" +
             "  document.addEventListener('click', function(e) {\n" +
+            "    if (e.target && (e.target.id === '__recorder_toolbar__' || (e.target.closest && e.target.closest('#__recorder_toolbar__')))) return;\n" +
             "    var target = findTarget(e.target);\n" +
             "    var desc = describe(target);\n" +
             "    var tag = desc.tag;\n" +
@@ -495,7 +496,7 @@ public class WebRecorder {
             "  document.addEventListener('mousemove', function(e) {\n" +
             "    ensureTooltip();\n" +
             "    var el = document.elementFromPoint(e.clientX, e.clientY);\n" +
-            "    if (!el || el === tooltip) { tooltip.style.display = 'none'; return; }\n" +
+            "    if (!el || el === tooltip || el.id === '__recorder_toolbar__' || (el.closest && el.closest('#__recorder_toolbar__'))) { tooltip.style.display = 'none'; return; }\n" +
             "    var loc = getLocator(el);\n" +
             "    if (!loc) { tooltip.style.display = 'none'; return; }\n" +
             "    tooltip.textContent = 'page.' + loc;\n" +
@@ -507,11 +508,49 @@ public class WebRecorder {
             "    tooltip.style.top  = y + 'px';\n" +
             "  }, true);\n" +
             "\n" +
+            "  function ensureToolbar() {\n" +
+            "    if (document.getElementById('__recorder_toolbar__') || !document.body) return;\n" +
+            "    var isPaused = window.__recorderStartPaused;\n" +
+            "    var bar = document.createElement('div');\n" +
+            "    bar.id = '__recorder_toolbar__';\n" +
+            "    Object.assign(bar.style, {\n" +
+            "      position: 'fixed', top: '10px', right: '10px', zIndex: '2147483647',\n" +
+            "      display: 'flex', alignItems: 'center', gap: '8px',\n" +
+            "      background: '#0f172a', color: '#f8fafc', padding: '6px 14px',\n" +
+            "      borderRadius: '20px', boxShadow: '0 4px 16px rgba(0,0,0,0.4)',\n" +
+            "      fontFamily: 'system-ui, -apple-system, sans-serif', fontSize: '13px', fontWeight: '600',\n" +
+            "      userSelect: 'none'\n" +
+            "    });\n" +
+            "    if (isPaused) {\n" +
+            "      bar.innerHTML = '<span style=\"color:#facc15;\">⏸ PAUSED (Manual Login)</span> ' +\n" +
+            "        '<button id=\"__rec_start_btn__\" style=\"background:#ef4444;color:#fff;border:none;padding:5px 12px;border-radius:12px;cursor:pointer;font-weight:700;font-size:12px;\">🔴 Start Recording</button>';\n" +
+            "      var btn = bar.querySelector('#__rec_start_btn__');\n" +
+            "      if (btn) {\n" +
+            "        btn.onclick = function(e) {\n" +
+            "          e.preventDefault(); e.stopPropagation();\n" +
+            "          window.__recorderStartPaused = false;\n" +
+            "          bar.innerHTML = '<span style=\"color:#22c55e;\">🔴 REC (Recording Active)</span>';\n" +
+            "          if (typeof window.__resumeRecording === 'function') {\n" +
+            "            window.__resumeRecording();\n" +
+            "          }\n" +
+            "        };\n" +
+            "      }\n" +
+            "    } else {\n" +
+            "      bar.innerHTML = '<span style=\"color:#22c55e;\">🔴 REC (Recording Active)</span>';\n" +
+            "    }\n" +
+            "    document.body.appendChild(bar);\n" +
+            "  }\n" +
+            "  if (document.readyState === 'loading') {\n" +
+            "    document.addEventListener('DOMContentLoaded', ensureToolbar);\n" +
+            "  } else {\n" +
+            "    ensureToolbar();\n" +
+            "  }\n" +
+            "\n" +
             "  document.addEventListener('click', function(e) {\n" +
             "    if (!e.altKey) return;\n" +
             "    e.preventDefault(); e.stopPropagation();\n" +
             "    var el = document.elementFromPoint(e.clientX, e.clientY);\n" +
-            "    if (!el) return;\n" +
+            "    if (!el || el.id === '__recorder_toolbar__' || (el.closest && el.closest('#__recorder_toolbar__'))) return;\n" +
             "    var loc = getLocator(el);\n" +
             "    if (typeof window.__inspectLocator === 'function') {\n" +
             "      window.__inspectLocator('page.' + loc);\n" +
@@ -531,12 +570,16 @@ public class WebRecorder {
     /** Last URL seen — used to auto-record navigation changes. */
     private final AtomicReference<String> lastUrl = new AtomicReference<>("");
 
+    /** Primary / main browser page. */
+    private final AtomicReference<Page> primaryPage = new AtomicReference<>(null);
+
     /** Live Playwright page — set once the browser opens, used for locator validation. */
     private final AtomicReference<Page> currentPage = new AtomicReference<>(null);
 
     private final java.util.concurrent.atomic.AtomicBoolean isPaused = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     private final java.util.concurrent.atomic.AtomicLong lastInteractionTime = new java.util.concurrent.atomic.AtomicLong(0);
+    private boolean isResume = false;
 
     public WebRecorder(String startUrl, String browserChoice, String projectRoot, String pageObjectName) {
         this.startUrl = startUrl;
@@ -554,6 +597,7 @@ public class WebRecorder {
     }
 
     public void start(List<ActionModel> preRecordedActions, boolean startPaused) throws Exception {
+        this.isResume = (preRecordedActions != null && !preRecordedActions.isEmpty());
         this.isPaused.set(startPaused);
         if (preRecordedActions != null && !preRecordedActions.isEmpty()) {
             for (ActionModel action : preRecordedActions) {
@@ -580,7 +624,11 @@ public class WebRecorder {
         System.out.println("║    Alt+Click         → print locator to CLI      ║");
         System.out.println("╚══════════════════════════════════════════════════╝\n");
 
-        try (Playwright playwright = Playwright.create()) {
+        Map<String, String> env = new HashMap<>(System.getenv());
+        env.put("NODE_TLS_REJECT_UNAUTHORIZED", "0");
+        Playwright.CreateOptions playwrightOptions = new Playwright.CreateOptions().setEnv(env);
+
+        try (Playwright playwright = Playwright.create(playwrightOptions)) {
             BrowserType bt = chooseBrowser(playwright);
 
             Browser browser = bt.launch(
@@ -594,30 +642,76 @@ public class WebRecorder {
             );
 
             Page page = context.newPage();
+            primaryPage.set(page);
             currentPage.set(page); // make available to processAction for validation
 
             // ── Register callback that JS will call with recorded actions ──
-            page.exposeFunction("__recordAction", (Object... args) -> {
+            context.exposeBinding("__recordAction", (source, args) -> {
                 if (args == null || args.length == 0) return null;
+                boolean isPopup = source.page() != null && !source.page().equals(primaryPage.get());
                 String json = args[0].toString();
-                processAction(json);
+                processAction(json, isPopup);
                 return null;
             });
 
             // ── Register inspector callback (Alt+Click, not recorded) ──────
-            page.exposeFunction("__inspectLocator", (Object... args) -> {
+            context.exposeBinding("__inspectLocator", (source, args) -> {
                 if (args == null || args.length == 0) return null;
+                boolean isPopup = source.page() != null && !source.page().equals(primaryPage.get());
                 System.out.println();
-                System.out.println("  🔍 INSPECT → " + args[0].toString());
+                System.out.println("  🔍 INSPECT " + (isPopup ? "[POPUP] " : "") + "→ " + args[0].toString());
                 System.out.print("  > ");
                 return null;
             });
 
+            // ── Register toolbar resume callback ───────────────────────────
+            context.exposeBinding("__resumeRecording", (source, args) -> {
+                if (isPaused.get()) {
+                    isPaused.set(false);
+                    Page p = (source != null && source.page() != null) ? source.page() : primaryPage.get();
+                    String currentUrl = p.url();
+                    lastUrl.set(currentUrl);
+                    ActionModel nav = new ActionModel(
+                        ActionType.NAVIGATE, currentUrl, currentUrl,
+                        "Navigate → " + currentUrl
+                    );
+                    engine.addAction(nav);
+                    System.out.println("\n  ▶ Recording resumed from browser button at URL: " + currentUrl);
+                    System.out.println("  ✔ NAVIGATE → " + currentUrl);
+                    System.out.print("  > ");
+                }
+                return null;
+            });
+
             // ── Inject recorder script into every page load ────────────────
+            context.addInitScript("window.__recorderStartPaused = " + isPaused.get() + ";");
             context.addInitScript(JS_RECORDER);
             context.addInitScript(JS_INSPECTOR);
 
-            // ── Track navigation changes ───────────────────────────────────
+            // ── Track popup windows / new tabs ─────────────────────────────
+            context.onPage(newPage -> {
+                currentPage.set(newPage);
+                System.out.println("  🪟 [POPUP/TAB OPENED] Active target switched to: " + (newPage.url().isEmpty() ? "about:blank" : newPage.url()));
+
+                newPage.onFrameNavigated(frame -> {
+                    if (frame.equals(newPage.mainFrame())) {
+                        String url = frame.url();
+                        if (!url.equals("about:blank") && !url.equals(lastUrl.get())) {
+                            lastUrl.set(url);
+                        }
+                    }
+                });
+
+                newPage.onClose(closedPage -> {
+                    System.out.println("  🪟 [POPUP/TAB CLOSED]");
+                    List<Page> remaining = context.pages();
+                    if (!remaining.isEmpty()) {
+                        currentPage.set(remaining.get(remaining.size() - 1));
+                    }
+                });
+            });
+
+            // ── Track navigation changes on primary page ───────────────────
             page.onFrameNavigated(frame -> {
                 if (frame.equals(page.mainFrame())) {
                     String url = frame.url();
@@ -663,8 +757,16 @@ public class WebRecorder {
             // ── CLI loop ───────────────────────────────────────────────────
             Scanner scanner = new Scanner(System.in);
             if (isPaused.get()) {
-                System.out.println("  ⏸ Recording paused on startup. Interact manually to reach your target page.");
-                System.out.println("  Type 'resume' or 'record' in CLI to start recording actions.\n");
+                System.out.println("\n╔══════════════════════════════════════════════════════════════╗");
+                System.out.println("║  ⏸  RECORDING IS PAUSED (Manual Login / Setup Mode)         ║");
+                System.out.println("╠══════════════════════════════════════════════════════════════╣");
+                System.out.println("║  1. Go to the browser and complete your login manually.      ║");
+                System.out.println("║  2. Navigate to your target page.                            ║");
+                System.out.println("║  3. Once on target page, click [🔴 Start Recording] on the   ║");
+                System.out.println("║     browser page OR type 'resume' here in CLI.               ║");
+                System.out.println("║                                                              ║");
+                System.out.println("║  ⚠️  DO NOT type 'resume' before completing your login!       ║");
+                System.out.println("╚══════════════════════════════════════════════════════════════╝\n");
             } else {
                 System.out.println("  Recording started. Interact with the browser...\n");
             }
@@ -727,16 +829,24 @@ public class WebRecorder {
 
             engine.printSummary();
             System.out.println("\n  Exporting generated test...");
-            TestScriptExporter exporter = new TestScriptExporter(projectRoot, browserChoice, pageObjectName);
-            String outputPath = exporter.export(engine.getActions(), startUrl);
-            System.out.println("\n  ✅ Generated test saved to:\n     " + outputPath);
-            System.out.println("\n  Run with:  mvn test\n");
+            TestScriptExporter exporter = new TestScriptExporter(projectRoot, browserChoice, pageObjectName, isResume);
+            String javaOutputPath = exporter.export(engine.getActions(), startUrl);
+            String exportedName = exporter.getPageObjectName();
+
+            System.out.println("\n  ✅ Java test saved to:");
+            System.out.println("     " + javaOutputPath);
+            System.out.println("\n  Run Java tests:       mvn test");
+            System.out.println("\n  Run TypeScript tests:");
+            System.out.println("     cd typescript-tests");
+            System.out.println("     .\\run-tests.bat");
+            System.out.println("\n  🤖 Sub-Agent Tip: Ask Antigravity:");
+            System.out.println("     \"Integrate " + exportedName + " recording into the framework\"\n");
         }
     }
 
     // ── Handle JSON action from JS ─────────────────────────────────────────
     @SuppressWarnings("unchecked")
-    private void processAction(String json) {
+    private void processAction(String json, boolean isPopup) {
         if (isPaused.get()) {
             return;
         }
@@ -752,41 +862,42 @@ public class WebRecorder {
 
             ActionModel action;
             String display;
+            String popupPrefix = isPopup ? "[POPUP] " : "";
 
             switch (actionType) {
                 case "CLICK":
-                    action  = new ActionModel(ActionType.CLICK, locator, "", "Click → " + locator);
-                    display = "  ✔ CLICK → " + locator;
+                    action  = new ActionModel(ActionType.CLICK, locator, "", "Click → " + locator, isPopup);
+                    display = "  ✔ " + popupPrefix + "CLICK → " + locator;
                     break;
 
                 case "INPUT":
-                    action  = new ActionModel(ActionType.INPUT, locator, value, "Fill → " + locator + " = \"" + value + "\"");
-                    display = "  ✔ INPUT → " + locator + "  =  \"" + value + "\"";
+                    action  = new ActionModel(ActionType.INPUT, locator, value, "Fill → " + locator + " = \"" + value + "\"", isPopup);
+                    display = "  ✔ " + popupPrefix + "INPUT → " + locator + "  =  \"" + value + "\"";
                     break;
 
                 case "SELECT":
-                    action  = new ActionModel(ActionType.SELECT, locator, value, "Select → " + locator + " = \"" + value + "\"");
-                    display = "  ✔ SELECT → " + locator + "  =  \"" + value + "\"";
+                    action  = new ActionModel(ActionType.SELECT, locator, value, "Select → " + locator + " = \"" + value + "\"", isPopup);
+                    display = "  ✔ " + popupPrefix + "SELECT → " + locator + "  =  \"" + value + "\"";
                     break;
 
                 case "CHECK":
-                    action  = new ActionModel(ActionType.CHECK, locator, "", "Check → " + locator);
-                    display = "  ✔ CHECK → " + locator;
+                    action  = new ActionModel(ActionType.CHECK, locator, "", "Check → " + locator, isPopup);
+                    display = "  ✔ " + popupPrefix + "CHECK → " + locator;
                     break;
 
                 case "UNCHECK":
-                    action  = new ActionModel(ActionType.UNCHECK, locator, "", "Uncheck → " + locator);
-                    display = "  ✔ UNCHECK → " + locator;
+                    action  = new ActionModel(ActionType.UNCHECK, locator, "", "Uncheck → " + locator, isPopup);
+                    display = "  ✔ " + popupPrefix + "UNCHECK → " + locator;
                     break;
 
                 case "PRESS":
-                    action  = new ActionModel(ActionType.PRESS, locator, value, "Press → " + locator + " [" + value + "]");
-                    display = "  ✔ PRESS → " + locator + "  key=" + value;
+                    action  = new ActionModel(ActionType.PRESS, locator, value, "Press → " + locator + " [" + value + "]", isPopup);
+                    display = "  ✔ " + popupPrefix + "PRESS → " + locator + "  key=" + value;
                     break;
 
                 case "HOVER":
-                    action  = new ActionModel(ActionType.HOVER, locator, "", "Hover → " + locator);
-                    display = "  ✔ HOVER → " + locator;
+                    action  = new ActionModel(ActionType.HOVER, locator, "", "Hover → " + locator, isPopup);
+                    display = "  ✔ " + popupPrefix + "HOVER → " + locator;
                     break;
 
                 default:
@@ -1053,11 +1164,21 @@ public class WebRecorder {
 
     public static List<ActionModel> parseExistingTest(String projectRoot) {
         List<ActionModel> actions = new ArrayList<>();
-        java.io.File testFile = new java.io.File(projectRoot + "/src/test/java/recorder/GeneratedWebTest.java");
-        if (!testFile.exists()) {
-            System.out.println("  [Warning] GeneratedWebTest.java not found. Starting fresh.");
+        java.io.File testDir = new java.io.File(projectRoot + "/src/test/java/recorder");
+        if (!testDir.exists()) {
+            System.out.println("  [Warning] Test directory not found. Starting fresh.");
             return actions;
         }
+
+        java.io.File[] testFiles = testDir.listFiles((dir, name) -> name.endsWith(".java"));
+        if (testFiles == null || testFiles.length == 0) {
+            System.out.println("  [Warning] No existing test files found. Starting fresh.");
+            return actions;
+        }
+
+        java.io.File testFile = java.util.Arrays.stream(testFiles)
+                .max(java.util.Comparator.comparingLong(java.io.File::lastModified))
+                .orElse(testFiles[0]);
 
         try {
             String content = new String(java.nio.file.Files.readAllBytes(testFile.toPath()));

@@ -27,7 +27,7 @@ public class Main {
         String resumeChoice = sc.nextLine().trim().toLowerCase();
         boolean resume = resumeChoice.equals("y") || resumeChoice.equals("yes");
 
-        String url = "https://dev-tapral.techies.work/Central";
+        String url = "";
         String pageObjectName = "GeneratedWebPage";
         java.util.List<ActionModel> preRecordedActions = new java.util.ArrayList<>();
 
@@ -41,9 +41,13 @@ public class Main {
                     }
                 }
                 try {
-                    java.io.File testFile = new java.io.File(projectRoot + "/src/test/java/recorder/GeneratedWebTest.java");
-                    if (testFile.exists()) {
-                        String testContent = new String(java.nio.file.Files.readAllBytes(testFile.toPath()));
+                    java.io.File testDir = new java.io.File(projectRoot + "/src/test/java/recorder");
+                    java.io.File[] testFiles = testDir.listFiles((d, n) -> n.endsWith(".java"));
+                    if (testFiles != null && testFiles.length > 0) {
+                        java.io.File latestTest = java.util.Arrays.stream(testFiles)
+                                .max(java.util.Comparator.comparingLong(java.io.File::lastModified))
+                                .orElse(testFiles[0]);
+                        String testContent = new String(java.nio.file.Files.readAllBytes(latestTest.toPath()));
                         java.util.regex.Pattern p = java.util.regex.Pattern.compile("import pageobjects\\.(\\w+);");
                         java.util.regex.Matcher m = p.matcher(testContent);
                         if (m.find()) {
@@ -58,14 +62,17 @@ public class Main {
             }
         }
 
-        if (!resume) {
+        if (!resume || url.isEmpty()) {
             // ── URL ────────────────────────────────────────────────────────────
-            System.out.print("  Enter target URL [https://dev-tapral.techies.work/Central]: ");
-            url = sc.nextLine().trim();
-            if (url.isEmpty()) {
-                url = "https://dev-tapral.techies.work/Central";
+            while (true) {
+                System.out.print("  Enter target URL: ");
+                url = sc.nextLine().trim();
+                if (!url.isEmpty()) {
+                    break;
+                }
+                System.out.println("  URL cannot be empty. Please enter a target URL.");
             }
-            if (!url.startsWith("http")) {
+            if (!url.startsWith("http://") && !url.startsWith("https://")) {
                 url = "https://" + url;
             }
         }
@@ -82,6 +89,12 @@ public class Main {
             System.out.print("  Enter Page Object name [e.g. PartnerPage] (default: GeneratedWebPage): ");
             pageObjectName = sc.nextLine().trim();
             pageObjectName = cleanClassName(pageObjectName);
+
+            String originalName = pageObjectName;
+            pageObjectName = TestScriptExporter.resolveUniqueName(projectRoot, pageObjectName);
+            if (!pageObjectName.equals(originalName)) {
+                System.out.println("  ℹ️  '" + originalName + "' already exists — auto-assigned unique name: " + pageObjectName);
+            }
         }
 
         boolean startPaused = false;
@@ -91,12 +104,18 @@ public class Main {
             startPaused = pausedChoice.equals("n") || pausedChoice.equals("no");
         }
 
+        String testClassName = pageObjectName.equalsIgnoreCase("GeneratedWebPage") ? "GeneratedWebTest" : (pageObjectName.endsWith("Test") ? pageObjectName : pageObjectName + "Test");
+        String tsPageClass = pageObjectName.endsWith("Page") ? pageObjectName : pageObjectName + "Page";
+
         System.out.println();
         System.out.println("  URL              : " + url);
         System.out.println("  Browser          : " + browser);
         System.out.println("  Page Object Name : " + pageObjectName);
-        System.out.println("  Output (Page)    : " + projectRoot + "/src/main/java/pageobjects/" + pageObjectName + ".java");
-        System.out.println("  Output (Test)    : " + projectRoot + "/src/test/java/recorder/GeneratedWebTest.java");
+        System.out.println("  Java Page Object : " + projectRoot + "/src/main/java/pageobjects/" + pageObjectName + ".java");
+        System.out.println("  Java Test File   : " + projectRoot + "/src/test/java/recorder/" + testClassName + ".java");
+        System.out.println("  Raw TS Recording : " + projectRoot + "/typescript-tests/recordings/" + pageObjectName + ".recorded.ts");
+        System.out.println("  TS Framework POM : " + projectRoot + "/typescript-tests/pages/" + tsPageClass + ".ts");
+        System.out.println("  TS Framework Spec: " + projectRoot + "/typescript-tests/tests/" + pageObjectName + ".spec.ts");
         System.out.println();
 
         WebRecorder recorder = new WebRecorder(url, browser, projectRoot, pageObjectName);

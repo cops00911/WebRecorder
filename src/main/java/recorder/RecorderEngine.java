@@ -103,13 +103,16 @@ public class RecorderEngine {
                 }
             }
 
-            // Detect and remove premature submit click (if submit was clicked, then input modified, then submit clicked again)
+            // Detect and remove premature submit click (only if user retried the exact same field before submit)
+            // Do NOT remove if 'prev' was following an input on a different field (e.g. multi-step wizard / Next button)
             if (a.type == ActionType.CLICK && result.size() >= 3) {
                 ActionModel last = result.get(result.size() - 1);
                 ActionModel prev = result.get(result.size() - 2);
+                ActionModel beforePrev = result.get(result.size() - 3);
                 if (last.type == ActionType.INPUT && prev.type == ActionType.CLICK && prev.locator.equals(a.locator)) {
-                    // Premature click on submit button 'a.locator' occurred before 'last' input was filled!
-                    result.remove(result.size() - 2);
+                    if (beforePrev.type == ActionType.INPUT && beforePrev.locator.equals(last.locator)) {
+                        result.remove(result.size() - 2);
+                    }
                 }
             }
 
@@ -139,7 +142,8 @@ public class RecorderEngine {
             old.type,
             newLocator,
             old.value,
-            old.description.replace(old.locator, newLocator)
+            old.description.replace(old.locator, newLocator),
+            old.isPopup
         );
         actions.set(actions.size() - 1, updated);
     }

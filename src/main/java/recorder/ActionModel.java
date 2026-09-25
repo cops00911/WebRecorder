@@ -28,11 +28,19 @@ public class ActionModel {
     /** Raw description shown in the CLI during recording. */
     public final String description;
 
+    /** True if this action was performed on a popup window or secondary tab */
+    public final boolean isPopup;
+
     public ActionModel(ActionType type, String locator, String value, String description) {
+        this(type, locator, value, description, false);
+    }
+
+    public ActionModel(ActionType type, String locator, String value, String description, boolean isPopup) {
         this.type = type;
         this.locator = locator;
         this.value = value;
         this.description = description;
+        this.isPopup = isPopup;
     }
 
     @Override
